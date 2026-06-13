@@ -1,0 +1,342 @@
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+# =========================
+# ROOM DATA
+# =========================
+standard_rooms = [str(i) for i in range(101, 151)]
+deluxe_rooms = [str(i) for i in range(201, 231)]
+
+booked_rooms = {}
+
+# =========================
+# MAIN WINDOW
+# =========================
+root = tk.Tk()
+root.title("Hotel Reservation System")
+root.geometry("1100x600")
+root.configure(bg="#f5f6fa")
+
+# =========================
+# SIDEBAR
+# =========================
+sidebar = tk.Frame(root, bg="#1e3799", width=200)
+sidebar.pack(side="left", fill="y")
+
+tk.Label(
+    sidebar,
+    text="BLUE LAGOON\nHOTEL",
+    bg="#1e3799",
+    fg="white",
+    font=("Segoe UI", 12, "bold")
+).pack(pady=20)
+
+tk.Button(sidebar, text="Reservation", width=18).pack(pady=10)
+tk.Button(sidebar, text="Rooms", width=18).pack(pady=10)
+tk.Button(sidebar, text="Customer List", width=18).pack(pady=10)
+
+# =========================
+# MAIN AREA
+# =========================
+main = tk.Frame(root, bg="#f5f6fa")
+main.pack(fill="both", expand=True)
+
+# =========================
+# TOP BAR
+# =========================
+top = tk.Frame(main, bg="#0a3d62", height=80)
+top.pack(fill="x")
+
+# Name
+tk.Label(top, text="Name", bg="#0a3d62", fg="white").grid(
+    row=0, column=0, padx=10, pady=20
+)
+
+entry_name = tk.Entry(top)
+entry_name.grid(row=0, column=1)
+
+# Room Type
+tk.Label(top, text="Room Type", bg="#0a3d62", fg="white").grid(
+    row=0, column=2
+)
+
+room_var = tk.StringVar(value="Standard")
+
+room_type_combo = ttk.Combobox(
+    top,
+    textvariable=room_var,
+    values=["Standard", "Deluxe"],
+    width=12,
+    state="readonly"
+)
+room_type_combo.grid(row=0, column=3)
+
+# Room Number
+tk.Label(top, text="Room No", bg="#0a3d62", fg="white").grid(
+    row=0, column=4
+)
+
+room_number_var = tk.StringVar()
+
+room_combo = ttk.Combobox(
+    top,
+    textvariable=room_number_var,
+    width=10,
+    state="readonly"
+)
+room_combo.grid(row=0, column=5)
+
+# Days
+tk.Label(top, text="Days", bg="#0a3d62", fg="white").grid(
+    row=0, column=6
+)
+
+entry_days = tk.Entry(top, width=5)
+entry_days.grid(row=0, column=7)
+
+# =========================
+# FUNCTIONS
+# =========================
+def update_room_list(event=None):
+    if room_var.get() == "Standard":
+        room_combo["values"] = standard_rooms
+    else:
+        room_combo["values"] = deluxe_rooms
+
+    room_combo.set("")
+
+
+def refresh_table():
+
+    for row in standard_tree.get_children():
+        standard_tree.delete(row)
+
+    for row in deluxe_tree.get_children():
+        deluxe_tree.delete(row)
+
+    # Standard Rooms
+    for room in standard_rooms:
+        if room in booked_rooms:
+            status = "Booked"
+            customer = booked_rooms[room]["name"]
+        else:
+            status = "Available"
+            customer = "-"
+
+        standard_tree.insert(
+            "",
+            "end",
+            values=(room, status, customer)
+        )
+
+    # Deluxe Rooms
+    for room in deluxe_rooms:
+        if room in booked_rooms:
+            status = "Booked"
+            customer = booked_rooms[room]["name"]
+        else:
+            status = "Available"
+            customer = "-"
+
+        deluxe_tree.insert(
+            "",
+            "end",
+            values=(room, status, customer)
+        )
+
+
+def check_price():
+    room_type = room_var.get()
+    days = entry_days.get().strip()
+
+    if days == "":
+        messagebox.showerror("Error", "Please enter number of days!")
+        return
+
+    try:
+        days = int(days)
+    except:
+        messagebox.showerror("Error", "Days must be a number!")
+        return
+
+    price = 100 if room_type == "Standard" else 200
+    total = price * days
+
+    messagebox.showinfo(
+        "Price Information",
+        f"Room Type: {room_type}\n"
+        f"Price per day: RM {price}\n"
+        f"Days: {days}\n\n"
+        f"Total: RM {total}"
+    )
+
+
+def book_room():
+    name = entry_name.get().strip()
+    room = room_number_var.get().strip()
+    room_type = room_var.get()
+    days = entry_days.get().strip()
+
+    if name == "" or room == "" or days == "":
+        messagebox.showerror("Error", "Fill all fields!")
+        return
+
+    try:
+        days = int(days)
+    except:
+        messagebox.showerror("Error", "Days must be a number!")
+        return
+
+    if room in booked_rooms:
+        messagebox.showerror("Error", "Room already booked!")
+        return
+
+    if room_type == "Standard":
+        if room not in standard_rooms:
+            messagebox.showerror("Error", "Invalid Standard room!")
+            return
+        price = 100
+    else:
+        if room not in deluxe_rooms:
+            messagebox.showerror("Error", "Invalid Deluxe room!")
+            return
+        price = 200
+
+    total = price * days
+
+    booked_rooms[room] = {
+        "name": name,
+        "type": room_type,
+        "days": days,
+        "total": total
+    }
+
+    messagebox.showinfo(
+        "Success",
+        f"Room Booked Successfully!\n\nTotal = RM {total}"
+    )
+
+    # Auto switch tab
+    if room_type == "Standard":
+        tab_control.select(standard_tab)
+    else:
+        tab_control.select(deluxe_tab)
+
+    entry_name.delete(0, tk.END)
+    entry_days.delete(0, tk.END)
+    room_combo.set("")
+
+    refresh_table()
+
+
+def checkout():
+    room = room_number_var.get().strip()
+
+    if room == "":
+        messagebox.showerror("Error", "Select room number!")
+        return
+
+    if room in booked_rooms:
+        customer = booked_rooms[room]["name"]
+
+        del booked_rooms[room]
+
+        messagebox.showinfo(
+            "Check Out",
+            f"{customer} checked out successfully!"
+        )
+
+        refresh_table()
+
+    else:
+        messagebox.showerror(
+            "Error",
+            "This room is not currently booked!"
+        )
+
+# =========================
+# BUTTONS
+# =========================
+tk.Button(
+    top,
+    text="Check Price",
+    bg="#60a3bc",
+    fg="white",
+    width=12,
+    command=check_price
+).grid(row=0, column=8, padx=5)
+
+tk.Button(
+    top,
+    text="Book Room",
+    bg="#38ada9",
+    fg="white",
+    width=12,
+    command=book_room
+).grid(row=0, column=9, padx=5)
+
+tk.Button(
+    top,
+    text="Check Out",
+    bg="#e55039",
+    fg="white",
+    width=12,
+    command=checkout
+).grid(row=0, column=10, padx=5)
+
+# =========================
+# ROOM TYPE EVENT
+# =========================
+room_type_combo.bind("<<ComboboxSelected>>", update_room_list)
+update_room_list()
+
+# =========================
+# TABS
+# =========================
+tab_control = ttk.Notebook(main)
+tab_control.pack(fill="both", expand=True, padx=10, pady=10)
+
+standard_tab = tk.Frame(tab_control)
+deluxe_tab = tk.Frame(tab_control)
+
+tab_control.add(standard_tab, text="Standard Rooms")
+tab_control.add(deluxe_tab, text="Deluxe Rooms")
+
+# =========================
+# STANDARD ROOM TABLE
+# =========================
+columns = ("Room No", "Status", "Customer")
+
+standard_tree = ttk.Treeview(
+    standard_tab,
+    columns=columns,
+    show="headings"
+)
+
+for col in columns:
+    standard_tree.heading(col, text=col)
+    standard_tree.column(col, width=200, anchor="center")
+
+standard_tree.pack(fill="both", expand=True)
+
+# =========================
+# DELUXE ROOM TABLE
+# =========================
+deluxe_tree = ttk.Treeview(
+    deluxe_tab,
+    columns=columns,
+    show="headings"
+)
+
+for col in columns:
+    deluxe_tree.heading(col, text=col)
+    deluxe_tree.column(col, width=200, anchor="center")
+
+deluxe_tree.pack(fill="both", expand=True)
+
+# =========================
+# START
+# =========================
+refresh_table()
+
+root.mainloop()
