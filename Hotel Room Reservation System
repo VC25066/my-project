@@ -1,4 +1,4 @@
-# Blue Lagoon Hotel Reservation System with SQLite Persistence + Tick‑Box Invoice
+# Blue Lagoon Hotel Reservation System with SQLite Persistence + Interactive Map + Tick‑Box Invoice
 # Install first: pip install tkcalendar
 
 import tkinter as tk
@@ -9,32 +9,67 @@ import sqlite3
 import csv
 import os
 
-STANDARD_PRICE = 100
-DELUXE_PRICE = 200
-STANDARD_PENALTY = 50
-DELUXE_PENALTY = 100
-
-standard_rooms = [str(i) for i in range(101, 151)]
-deluxe_rooms = [str(i) for i in range(201, 231)]
-booked_rooms = {}
-
-# --- Database setup ---
+# ==================================================
+# DATABASE SETUP & INITIALIZATION
+# ==================================================
 conn = sqlite3.connect("hotel.db")
 cursor = conn.cursor()
 
+# Core users table initialization
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS bookings (
-    room TEXT,
-    name TEXT,
-    type TEXT,
-    days INTEGER,
-    checkin TEXT,
-    checkout TEXT,
-    total INTEGER,
-    penalty INTEGER,
-    status TEXT
+CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    password TEXT NOT NULL,
+    role TEXT
 )
 """)
+
+# --- OPTION 2: SAFE SCHEMA MIGRATION ---
+# Check existing columns in the bookings table to prevent crash
+cursor.execute("PRAGMA table_info(bookings)")
+columns = [col[1] for col in cursor.fetchall()]
+
+if len(columns) > 0 and "id" not in columns:
+    # Existing database found with old schema (missing 'id'). Upgrading safely...
+    cursor.execute("ALTER TABLE bookings RENAME TO old_bookings")
+    
+    cursor.execute("""
+    CREATE TABLE bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room TEXT,
+        name TEXT,
+        type TEXT,
+        days INTEGER,
+        checkin TEXT,
+        checkout TEXT,
+        total INTEGER,
+        penalty INTEGER,
+        status TEXT
+    )
+    """)
+    
+    cursor.execute("""
+    INSERT INTO bookings (room, name, type, days, checkin, checkout, total, penalty, status)
+    SELECT room, name, type, days, checkin, checkout, total, penalty, status FROM old_bookings
+    """)
+    cursor.execute("DROP TABLE old_bookings")
+    conn.commit()
+else:
+    # Normal table creation if the table doesn't exist or is already upgraded
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS bookings (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        room TEXT,
+        name TEXT,
+        type TEXT,
+        days INTEGER,
+        checkin TEXT,
+        checkout TEXT,
+        total INTEGER,
+        penalty INTEGER,
+        status TEXT
+    )
+    """)
 
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS invoices (
@@ -43,496 +78,719 @@ CREATE TABLE IF NOT EXISTS invoices (
     price REAL
 )
 """)
+
+cursor.execute("""
+INSERT OR IGNORE INTO users (username, password, role)
+VALUES (?, ?, ?)
+""", ("admin", "admin123", "Administrator"))
 conn.commit()
 
-# --- Load active bookings ---
-cursor.execute("SELECT room, name, type, days, checkin, checkout, total FROM bookings WHERE status='Booked'")
-for r in cursor.fetchall():
-    booked_rooms[r[0]] = {
-        "name": r[1],
-        "type": r[2],
-        "days": r[3],
-        "checkin": r[4],
-        "checkout": r[5],
-        "total": r[6],
-        "checkout_dt": datetime.strptime(r[5], "%Y-%m-%d %H:%M")
-    }
+# ==================================================
+# GLOBAL HOTEL CONFIGURATION & SYSTEM STATE
+# ==================================================
+STANDARD_PRICE = 100
+DELUXE_PRICE = 200
+STANDARD_PENALTY = 50
+DELUXE_PENALTY = 100
 
-root = tk.Tk()
-root.title("Blue Lagoon Hotel")
-root.geometry("1400x750")
+standard_rooms = [str(i) for i in range(101, 113)]  # Balanced grid layout mapping
+deluxe_rooms = [str(i) for i in range(201, 209)]
+booked_rooms = {}
 
-sidebar = tk.Frame(root, bg="#233b9e", width=180)
-sidebar.pack(side="left", fill="y")
+# Premium UI Palette Tokens
+BG_DARK = "#0f172a"       
+BG_SIDEBAR = "#1e293b"    
+ACCENT_BLUE = "#0ea5e9"   
+ACCENT_TEAL = "#0d9488"   
+TEXT_LIGHT = "#f8fafc"    
+TEXT_MUTED = "#94a3b8"    
 
-tk.Label(sidebar, text="BLUE LAGOON\nHOTEL",
-         bg="#233b9e", fg="white",
-         font=("Segoe UI", 16, "bold")).pack(pady=25)
+COLOR_AVAILABLE = "#10b981"   
+COLOR_RESERVED = "#f59e0b"    
+COLOR_OCCUPIED = "#ef4444"    
 
-main = tk.Frame(root)
-main.pack(fill="both", expand=True)
+def load_active_bookings():
+    booked_rooms.clear()
+    cursor.execute("SELECT id, room, name, type, days, checkin, checkout, total FROM bookings WHERE status='Booked'")
+    for r in cursor.fetchall():
+        booked_rooms[r[1]] = {
+            "booking_id": r[0],
+            "name": r[2],
+            "type": r[3],
+            "days": r[4],
+            "checkin": r[5],
+            "checkout": r[6],
+            "total": r[7],
+            "checkout_dt": datetime.strptime(r[6], "%Y-%m-%d %H:%M")
+        }
 
-top = tk.Frame(main, bg="#0a3d62")
-top.pack(fill="x")
+# ==================================================
+# STAGE 1: LOGIN WINDOW
+# ==================================================
+def show_login_window():
+    global root, username_entry, password_entry
+    root = tk.Tk()
+    root.title("Blue Lagoon Hotel Login")
+    root.geometry("500x380")
+    root.resizable(False, False)
+    root.configure(bg=BG_DARK)
 
-# --- Input fields ---
-tk.Label(top, text="Name", bg="#0a3d62", fg="white").grid(row=0, column=0, padx=5, pady=10)
-entry_name = tk.Entry(top)
-entry_name.grid(row=0, column=1)
+    root.update_idletasks()
+    w, h = root.winfo_width(), root.winfo_height()
+    root.geometry(f"{w}x{h}+{(root.winfo_screenwidth() // 2) - (w // 2)}+{(root.winfo_screenheight() // 2) - (h // 2)}")
 
-tk.Label(top, text="Room Type", bg="#0a3d62", fg="white").grid(row=0, column=2)
-room_var = tk.StringVar(value="Standard")
-room_type = ttk.Combobox(top, textvariable=room_var,
-                         values=["Standard", "Deluxe"], state="readonly", width=12)
-room_type.grid(row=0, column=3)
+    title = tk.Label(root, text="SYSTEM SECURITY ACCESS", font=("Segoe UI", 18, "bold"), bg=BG_DARK, fg=ACCENT_BLUE)
+    title.pack(pady=35)
 
-tk.Label(top, text="Room No", bg="#0a3d62", fg="white").grid(row=0, column=4)
-room_no = tk.StringVar()
-room_combo = ttk.Combobox(top, textvariable=room_no, state="readonly", width=10)
-room_combo.grid(row=0, column=5)
+    tk.Label(root, text="Username", bg=BG_DARK, fg=TEXT_MUTED, font=("Segoe UI", 11, "bold")).pack()
+    username_entry = tk.Entry(root, font=("Segoe UI", 12), width=25, bg="#334155", fg="white", insertbackground="white", bd=0)
+    username_entry.pack(pady=8, ipady=4)
 
-tk.Label(top, text="Days", bg="#0a3d62", fg="white").grid(row=0, column=6)
-entry_days = tk.Entry(top, width=6)
-entry_days.grid(row=0, column=7)
+    tk.Label(root, text="Password", bg=BG_DARK, fg=TEXT_MUTED, font=("Segoe UI", 11, "bold")).pack()
+    password_entry = tk.Entry(root, show="*", font=("Segoe UI", 12), width=25, bg="#334155", fg="white", insertbackground="white", bd=0)
+    password_entry.pack(pady=8, ipady=4)
 
-tk.Label(top, text="Check‑In Date", bg="#0a3d62", fg="white").grid(row=1, column=0, pady=5)
-date_entry = DateEntry(top, date_pattern="yyyy-mm-dd")
-date_entry.grid(row=1, column=1)
+    login_btn = tk.Button(root, text="LOG IN SECURELY", width=22, font=("Segoe UI", 11, "bold"), bg=ACCENT_BLUE, fg="white", activebackground="#38bdf8", activeforeground="white", bd=0, cursor="hand2", command=process_login)
+    login_btn.pack(pady=25, ipady=4)
 
-tk.Label(top, text="Time", bg="#0a3d62", fg="white").grid(row=1, column=2)
-time_var = tk.StringVar()
-time_combo = ttk.Combobox(top, textvariable=time_var,
-                          values=[f"{h:02d}:00" for h in range(24)],
-                          state="readonly", width=10)
-time_combo.grid(row=1, column=3)
-time_combo.current(14)
+    root.mainloop()
 
-# --- Functions ---
-def update_rooms(event=None):
-    room_combo["values"] = standard_rooms if room_var.get() == "Standard" else deluxe_rooms
-    room_combo.set("")
+def process_login():
+    username = username_entry.get().strip()
+    password = password_entry.get().strip()
 
-def check_price():
+    cursor.execute("SELECT * FROM users WHERE username=? AND password=?", (username, password))
+    if cursor.fetchone():
+        root.withdraw()
+        show_loading_screen()
+    else:
+        messagebox.showerror("Login Failed", "Incorrect username or password.")
+
+# ==================================================
+# STAGE 2: LOADING SCREEN ANIMATION (EMBEDDED LOGO STRING)
+# ==================================================
+from PIL import Image, ImageTk
+import base64
+import io
+
+LOGO_BASE64_STRING = """iVBORw0KGgoAAAANSUhEUgAAAMgAAAEsCAMAAACxJAyMAAAAulBMVEUAAACwfEmwfEmwfEkAsOgAtu0Atu2pe00Atu0Atu0Atu0Atu2wfEkAtu0Atu0Atu0Atu2wfEkAtu2wfEkAtu2wfEkAtu2wfEkAtu0AS5wAS5ywfEmwfEmwfEmwfEmwfEmwfEkAS5xwb29wb29wb29wb29wb29wb29wb29wb29wb29wb29wb28AS5xwb28AS5wAS5wAS5wAS5wAS5wAS5wAS5wAS5xwb28AS5wAS5wAtu2wfEkAS5xwb2/NjsoEAAAAOnRSTlMAgEDAEPBAEKCAIGDw4NDAMKCQMLAgcGBQQIDg0LCQUHDAgJDwMErg0GAgwLDgoGAg8DDQoJBwcFCwNcrXpAAAFEJJREFUeNrUmE2u6yAMhWN7wMQThCIP+En3wf739a501bpg0iZXSZt3hlWBfNg+BqazhAKeiOuTiDwITv+NHEKOdV0xA7rp6sKS6halcuHQOMlct4uzXDIwi6/7lZfpWpoL17+JyzxdRpjrquiuF2G5SLkgVSumAoj9PxEK8Yj2AigDjFRkfpWGUtLlUEKPwV7cJoPzfCEU53uKZY/N9Sz+W25847ZmZdoraV2Cb9MXNNM7F51RADz9ygMIzu98mz7qxTYcDF1WIORUR0oZsMtP4C8GxdE6BgLV1yLAdRT6ZKUgGwxTwUbWF8Yo/Dn7ulVVfsrqoBSbWMJTreSqgulkWdONqL9LqnuVRIdj/LARu6fvLU6TI9a/KN50ivJEeD5JiCYcmuPGoQB/5CaHP4KxkzGMgsJhOleBtToeuybRMHgJ4/HiDU2Ux4bk00ksh6ydtzjL/LqVmpskBfWRj5AENsu48qc735Jro+JGS5ylwKYYMZrS3Sh3a4fiPV7pdJLApjygSRAZjEFEAUHEwVcJ1UH3cGeTKIfXzVu/TyB4qq3IQ/8nGh1O/KkkLvUcyMZ59HXr/YuWdTwOPUk8oZ8YDlk5VKDnt4eTJxYHVSVKclZn9D2HN7eIPR0+ghvebIpd7liJ4RhdIWZft8vP5hQ6mv/YC0p4bL7hSMFg7EcJqSfRksQjCz1qynYc3mlntIqU4VeZYrUqj9F5lYQPLJP7KjwrRxd4YeNO5rgV7IsWy2Raku/sPh/GsdyXCL3Pi9Zro/WHdqcvJ51TSE+CR5eJ43bCor4/DAd1FJalwebFdFxog8TzgYmlIRblGL3T+bDFPNohTkmafkJqMQdoabtsMBzJGNFrWYtLPQmHNheWIx0Lde5njsAm3/e98NnJdNeWA50L2p5L6xzxH6vmmuMqDENhhcClFPqkTCuFENaR/S/sajQjHVtmkpCQf/RlPvv4OER1e2ttCMn2wLKIXrgmpAhYUPG76OgD3SV/cOUCmI7aY1U8YQph4T0Zyw2EhKdqZBHsQQWxvF8shICNStYaZ6iLq2nmWq6OKciEbBEDGw44sG0tSHi2FEuWPqQgihcA5ohRXJoseFOFOcjEXRoDETSwxKNWeRSoSTEBTwOujimI4+EWwVFOsiBFKIIqN66FFcQwYbmdHF2fQuKYhmcm4UfxblExI1R4b08Tds098K5Gm9Bqv7nAS59vURD8nN17OtD5AAk2bJalyTCFr4UHJw9G9YawYJlJIEGSke8P162SmMJWH2lBDDKGQOFVP39AQBIqv2H118yQx6JWn1kJ3sIgo+t1+wEJkkCsvCMrYGVvHQ29dS1Em9p+nQdIiKQdMAcR/UGVNhQdAbW4dWg2XVi9pyD+UsfEhXuX4asCZT3YREFBEp333nAQf62jHjzRAq1Ud0uBZzlaaAWqtPzUjQdIjKTCfEfZZ1otU+BZLWSGXCUX5OoBEiextPV4TFxkTkNLa6Ch3rSCnDwBCZPITpyhLVxkb+RWaWBzckG+PAOJk2gqp5VeKOQ1z3wnYWBj8hHNxwsQvBLskhH14bcw5LaIobnRVGYmybA4CNZJflxOvpnqYMgc7o6ar92QmYoa1sULkCjJSrOk6D1oUOUcZ60iG2Oqf9y8AAmTCDlVjCpzkmg4E/TJWzBuWBwkRiLdSVCZZcrsdenENk1ZvRcgSSQrjaWJrbT4g9euRfO+4N5Tm+6fj4P4je/x6isa2O2HgDxtQGZhw8oBEYly5ecnbqMILZGZDhvW1WeDWOJOk/gzwvlcYlqb1Q6tl88CkQG+23tEfvqb7/JAKiIzzfsvsJ4+E0REW0mcz6nxfjeIlSAPao9j0LBKQKZNez8/f8frM2eMcPdV1NpDje63QOqTeLmJ+CUk9XXFbxWAKAligo9SEuQjMV6fPycYn3sfdNwxII64r04xLKResF37+m9V07l3/26McpAh0PiBnUlkXZ6JHnruLuK7fRaI3g3SxSia/8ybXY7bMAyEVdRS/VM53sAVDPShPcfe/2B9CLDTgPZQlBTH88rtNqQ5n0dq2gfHBdbKP7s4q75L4qKRn2C7ABbXOnWgKaglREzVrpGPPyyZEMU0fv3g3e/gF9UoTJVgquJGPtCI+8W+Z9JFslL35Wv107z3HgFrianGpY1HuPAJyFpMK3shogpjbCyi2PH7G75QgEVYG0BTNCJYK0yFiFLXCL4XypQU1kqaUtbCVLBNZSN/s/5j3sZZ203zQURBVZpK2mYqawTO1rT5HdYymvYbZ+2BbUJF+oVMvBxRJRGFVGGbika+4b1HBJrqrIXiMMoqNxWqztoIee8JXoqloTQNvNo4ovzIdYfCWmkbWu24bUoUOlMjcmkGZptRMVUk8zFqxYZQ6ayFbXiV26ZYA349lZ21xFS6bYJ9tfDAqVqw1mAb+4J14nfty8TaSKpaRPGgr01z3qkOa9GRtSBVk216Z1dv8xtn7UaqlogyObs2AwEJTVnVbhszvfQ5mZMrFImpuG1mZ5X+EXWa6lWzbUo2i7MEykmu0I2xVrdNnTjdraytt41dS84OGJIrqgW5v0ZJ8+yoRhRUq2xTqTEnk+Yk11QTUTCB5Eq1kllDUXluhRFFzqe8kS1j+1e6FlqAMb2LKuwe9dGFhqzltulr7K6/IYL+thkNtqF/U7k6r84pENY2jSg3V6NB3dyBvIKNrOVunFyNdJbYIwoig8U20VWLG9XMWihY5hNchdpHlKNG9AxRK9WVTzmSHwfR5aPnYLJNvTgnDazFoj6mHKipMJ9G2shFpmUtJDqi4RalhW40S9yUiML+8ZqaCvPpptDGHh6DLYwoB5+XHwexi7HReiWSt3lEASp2x8AjChwXmi0X5mSJKNjGA0/TG2us8b0de/3umZRGFLk2krKMtUg3WKx6TeRGlrAWLNYAB9ZKxy2uofpDutNXME9qkyjspZvkWqqbTRFFT2oyohyAeHVtZLhFeV4pGjtERDlMN3NDg4hMSiIKYKOfnxBRSLpZXHvxiALY8BOtiCinhF6IZwk8tWg5LAnWinTzEvF0h1uf/MtSnm5OEMnbpns4/LQYy4u1BBVFMIR+yUXSzavVY7bEnrn3J70n6ebF6sFLdosiDUGJDMadp97ypTF+7p0OWbug4dcpgbmMyNkRBawFDvwpPtk8Ul4VkcMzBzCVeXSnaImYbQ2RAxp+2tP1NKt0q2BuCZEjWPs/OQZ3otInVE5kGAMQi8GdJBmqVCKnAyKLZ4m1Ok/d/RMqJLLgmt/cGxQw3Rwi95LI4B0ex1s0wL8GImOXsGlwx3vUka8G0HguI4pP7q0a0UoukbediOKHU7eKt2ImcrhSG49WsEIWIodrtfEYOz7qAZG9JHJ4NOyuJZFyOZFxPrmgMPYDIqf43MXmLqtwh7UZkf0tXfJZ/GPvXJcThaE4HmuIgEoopZSw2wsP4Hh3tOX9n2tDIJwEiFKns6uz+X8quZ5fLifQEFSFU486ZzxyGru3DwE0JPGoxjO/Id90jXxSy0dWVlZWVlZWVlZWVlZWVlb/pTBjbGUKvkb4H/2ngRVFkZmCrxEZtjFrQSyIBTkvC2JB7g5kxRj+NsiGfR8E1k30AwpDzeLlaV1wLTLcBtnkeb5EUurFar8ouNYnZgTBaUTFdhtNsL4PzEO55rRS60WVuev3HYOksPPF8/A6iFsl96TF+aKQ2mIFpNs1ysWhaLTrgHR34J3wzAng7ieoo94XkeayEIEF4YEwVNd2IEgmeiPPt0DSBsH69hvW3u90eKN+yj8gnBsV6KfXQ6dK5ajN8dmSJ0G2hw0fK8K47AIIxK8PYuyVKMveoRV/Uo8QHuQ5SiOnzadasOgaovST42EZnKi/jVOmIQGcU5K7rD4HDUr6yqItU4bLYhBIORiPdVVrmakN4mM1MFA+E5Uqxsd1YuUY0hR60IUUOGiKFn3mK6iqodK+zQAQpo6nTGQyeS2wvq5XMoERQpGaj8oD7LhCgqLnzRxBamLcMnTPrw4XQGS6Y+ODYWz1gICZEB9pRsD3JXz1sxmx7BtXa44QQJRuJS1Dj/xqPwCknBdICzWCQGV98VSa74NttaVzObJSrZTkAgg0bj4ABNzbVSBxZ8hBR0E4DBu1o7xBIGg4yDpvJDN1QfxpRGkgVwtwnbjjBDydn9aDCPJBI/wUSHfxMYDAiqiBxKXxGNaIxARCekHoT4Js6h4B7XUQMLO8DYk9rzRMO42dEDIVnAH6dyCQDKSDNK419qGy3h9foNgI4veCuENAxNXph0ASqE0DSZyeD/PDPAZnDJNeajp4si/BfiOIXDgvgcTgOQGkMmYeeaVS9ewL2AarZlUI0VajdBDIiV+xASA7WAMNIDDMWyDU8LEWp3JmQBvJbo20fsIXQeQkhnstbbBJ+zPZcwt8GWQKt+IqCDacefJUi0O5TjpYwYvRGZCd5Fg0VMBXcK2qsG2h3TSecPOIdewB8araYFqA9/2ktaKpD99XA3AXsrotZ03MIFzrXXZky53yZMU0k9cHxjL+B4AcRbb9kbHDnkfkbRDpnIIpIfIteT4rRLyuCKuPVZSnT8r0jq84ayciJHVFamQC2RSa1htwX8d6/oMqXwDBkK0Doj/wzV3lLKjppHf/A2WoJneREQStDlswaKc+szOYGEL5Sr2rYnkhtTjgHhCwzPGwDyBus5r7BFpZP/3gqv6Mqs7aDMKFWZad8jxbrrRthQZqn3Mdykhts2G1zPanLDuujNsKoSfmARYvBdcTIq05wOs6kDcVGdpndcPELW8PUgjhdYTae5MY/XUFuvt1RXPeo8RIB3n3DBIjUHTPIA7WP9d3n682B+XYkqb74grdpdLqPMaUEJKIVT64zw6p10kQvVcOhAhVMG7tQM+3j2YIkfvtDSsrq9vR5EHoeVjqp4f30eiDp0c3pcnL6+xLajy6APP8Mf4C/RqPniDuZWQW6upxLPTWE/Ug8rwYTBCRD+3Qx6+WxmoSY2rQrDESELvqKUtGTYw/8ft05ld4W03z1lfpKxTdLb+rt+tAPmTUu7Gi30NBnn/31zrrbYqJIfX7dSBNaY/mFhsNA3mawdR4eeAz+NVEAqmFfj+OuN7GlS3oKpAJNJsZZPY8BGTySw7ySRM0mplKmPzh1W56JAWBAAwjHrhwIYZwQJH//ys3mdF9Q1OlpmWX0/SYRh6oKvxof6KTM3Ra1+0DYp619FMsWFI5hucnkFnKCDcr4bkewv6s30F+Vr9kYktOxnQPmZQIDYSnkH7OvIcQWbYQWzLEuztI9Di6nO56iDjGQNKvYKfMKuUxXEGY+OyErBaWJIB7DSGyNmMo4C2EDLLXEKfVcEbdL8huhkH8TwIcoCxDds9BFVKFlNaHHSghQyBHSEVjErHVQWxlyCKEIpTUdW+j0yMbAwnnNDpiq4cco4wahEl3Wia2a7rzeRDE/x3LepBEiCUSFEjSYwVmbCOrDIOcxYoYjzLEFAJHhgQ+SC3zfT7aIRBOnw2TVhWI81RLEbJeD22TKpwZB/HkoMnEVgc5QyeoEC1F6IjII1JHQRZqxxk9UYLQqVUgy80ck0J0G8ZByjmNjKtKEIaaRcj9HNsGWvjmawjRtDVxtokQ/p5kyP4YwgDrQ8jctSRGVm0T0okQ7jaiCJluIFGA2AcQuTGbXVYQx0mGMOsS5D7q/yGEOtUUxU2GsGRJh0z/H0Jklc97NqdCIpvJEMiIHOHkS3etK0PY/cMoyICqxQL4bomCBmH/fpPs4yGxz88MrYdAzT2kPi6/4yG1vyUI/EuCsJV9uSGuDPD1hqimNgU2KBA2Ex9lSDbPrrXKSEik2H4UYK9D2EyAPLqeDVRIWAMgRPXUtEwhkyB0vstXv/Z6+VN7g/gOQtdqKzqEzQTI3eUTC7a0Ncy9gtCX2rIK4X/lA1JIrwf37J4FegGha60tOoTNBAjR4s39UxQ+byMg2xWkXEAopUBIkv3Bcy2mMb6HONZaGqQOIYwqkKtHbhzLXc6U95CkdeSZKg1yPolIDcQqdYv74NrQiOFXkE3rJ3BOBUL5BMIjnuy0Auldb1vdSwg7nzzG9QLCGVqI1V4JBekNy4bkBYSHO1rFj9eQ2EEY2+w6hwCM/pAsX0M4564fqiqEA0Dal4I5Gdqy8qJIrv8hfhBTeQ7x+s5aKfFA+paB9K9pc7HnbyD0t7qFd7rTbn9/9lGn2R8DAzLJjUTYrmq+u4FYIK2E4f1h14xxGAZhKGqyeMmSwWKgCNbe/4KVSFsLxI9Z2PxWLMdPUXAQbmUgj5YcUVQE029N+P/OEKFLRRSZP/olNKOcuCHbImOzAK88WyJ8jiKNmGazJQC+5jVeKyL9FovbFxsiFFWko30XSqpMGAlp1M5VaEVk9S6jYBHrwMpH+E0caVEQiSHf0TnUQ/o5rgf+60yAtnxnlKdI/sY5juM4juM4zg7edsSGFBv41FbHuBKDMBBAp+MeARsCEW2quf+1vn5YhJACbLG8KooiOxojEwRzemEhKeYkYLvIA3OWBlOGFnMHI3Y7GTDnqZhSeswFntjt4iLwSGZMZS4CN+SF3chFWjfpMOXIezF1EpspV2klkoIJIZlWU6dik3wd/xJJ9zzZ1J8PTfZ5T5LpebosOraV4KeE9qfyU8K1Ehm/Zi72vKCnjj1r0DGWPafoiWfvMvi90y1amGv0l5UuS+SuxIktYli1uB2rZPDCpFbiXsUVInY5Vi0ksLgxcNcSsorrwD7CwmIks4gYiCwyRiwLwS6th8eI+3YiDiO+pbVB6+FnaSk/XwQMhFpCZ1N/GmEbeXJSN04rk06e1RPHJysbcWQeT90p7NazZcu2imGYlivb6iTv4ck6y/Zyw6mHWLaXxS6+rpo8SEtrc/EBr4KXGooOSuS6AD02kXaDnRZvsrYLI+JFbNeLvpewZ7tfBd/7A1VEuATgeA34AAAAAElFTkSuQmCC"""
+
+def show_loading_screen():
+    current_username = username_entry.get().strip()
+    if not current_username:
+        current_username = "Staff"
+
+    loading_win = tk.Toplevel()
+    loading_win.title("Initializing System")
+    loading_win.geometry("500x650")
+    loading_win.resizable(False, False)
+    loading_win.configure(bg="#0a3d62")
+    
+    # Center Window Layout
+    loading_win.update_idletasks()
+    w, h = loading_win.winfo_width(), loading_win.winfo_height()
+    x = (loading_win.winfo_screenwidth() // 2) - (w // 2)
+    y = (loading_win.winfo_screenheight() // 2) - (h // 2)
+    loading_win.geometry(f'{w}x{h}+{x}+{y}')
+    
+    # Header Titles
+    tk.Label(loading_win, text="Welcome", font=("Segoe UI", 24, "bold"), fg="white", bg="#0a3d62").pack(pady=(40, 5))
+    tk.Label(loading_win, text=f"{current_username.upper()}", font=("Segoe UI", 14), fg="#dcdde1", bg="#0a3d62").pack(pady=(0, 30))
+
+    # Canvas for drawing the custom circular ring loader
+    canvas_size = 300
+    canvas = tk.Canvas(loading_win, width=canvas_size, height=canvas_size, bg="#0a3d62", highlightthickness=0)
+    canvas.pack()
+
+    # --- CENTER HOTEL LOGO INTEGRATION FROM STRING ---
     try:
-        d = int(entry_days.get())
-    except:
-        messagebox.showerror("Error", "Enter valid number of days")
-        return
-    price = STANDARD_PRICE if room_var.get() == "Standard" else DELUXE_PRICE
-    total = price * d
-    messagebox.showinfo("Price", f"Total Price = RM{total}")
+        # Convert the text string back into image bytes safely in memory
+        image_data = base64.b64decode(LOGO_BASE64_STRING)
+        image_bytes = io.BytesIO(image_data)
+        
+        img_open = Image.open(image_bytes)
+        img_resized = img_open.resize((170, 170), Image.Resampling.LANCZOS)
+        logo_img = ImageTk.PhotoImage(img_resized)
+        
+        # Kept safely referenced to prevent Python's garbage collection from clearing the asset
+        canvas.image = logo_img 
+        canvas.create_image(canvas_size // 2, canvas_size // 2, image=logo_img)
+    except Exception as e:
+        print(f"Embedded logo error: {e}")
+        canvas.create_text(canvas_size // 2, canvas_size // 2, text="[ BLUE LAGOON ]", fill="white", font=("Segoe UI", 12, "bold"))
 
-# --- Tick‑box invoice window ---
-def invoice_window():
-    win = tk.Toplevel(root)
-    win.title("Room Invoice")
-    win.geometry("600x700")
+    # Ring tracking measurements
+    padding = 20
+    thickness = 10
+    bbox = (padding, padding, canvas_size - padding, canvas_size - padding)
 
-    tk.Label(win, text="Room Invoice Checklist", font=("Segoe UI", 14, "bold")).pack(pady=10)
+    # Draw the static underlying dark blue circle track
+    canvas.create_oval(bbox, outline="#233b9e", width=thickness)
 
-    tk.Label(win, text="Select Room").pack()
-    room_var_invoice = tk.StringVar()
-    room_combo_invoice = ttk.Combobox(win, textvariable=room_var_invoice, state="readonly")
-    room_combo_invoice["values"] = list(booked_rooms.keys())
-    room_combo_invoice.pack(pady=5)
+    # Dynamic overlay arc loader setup (Starts at 12 o'clock)
+    active_arc = canvas.create_arc(bbox, start=90, extent=0, outline="white", width=thickness, style="arc")
 
-    room_type_label = tk.Label(win, text="Room Type: -")
-    room_type_label.pack()
-    room_number_label = tk.Label(win, text="Room Number: -")
-    room_number_label.pack()
+    # Central Status Labels matching the data framework logic updates
+    status_label = tk.Label(loading_win, text="Connecting to core hotel infrastructure...", font=("Segoe UI", 11, "italic"), bg="#0a3d62", fg="#dcdde1")
+    status_label.pack(pady=(30, 5))
+    
+    percentage_label = tk.Label(loading_win, text="0%", font=("Segoe UI", 12, "bold"), bg="#0a3d62", fg="white")
+    percentage_label.pack()
 
-    def update_room_details(event=None):
-        room = room_var_invoice.get()
-        if room and room in booked_rooms:
-            info = booked_rooms[room]
-            room_type_label.config(text=f"Room Type: {info['type']}")
-            room_number_label.config(text=f"Room Number: {room}")
+    # Preserved your hotel database data array tasks
+    loading_tasks = [
+        (20, "Authenticating secure credentials..."),
+        (45, "Loading room layout blueprints..."),
+        (70, "Compiling active customer logs..."),
+        (90, "Syncing reservation database matrix..."),
+        (100, "System Initialization complete!")
+    ]
+
+    def advance_progress(index=0, current_val=0):
+        if index < len(loading_tasks):
+            target_val, message = loading_tasks[index]
+            
+            if current_val < target_val:
+                current_val += 2
+                current_extent = -360 * (current_val / 100.0)
+                canvas.itemconfig(active_arc, extent=current_extent)
+                percentage_label.config(text=f"{current_val}%")
+                
+                if current_val >= target_val:
+                    status_label.config(text=message)
+                    index += 1
+                loading_win.after(35, lambda: advance_progress(index, current_val))
+            else:
+                index += 1
+                loading_win.after(35, lambda: advance_progress(index, current_val))
         else:
-            room_type_label.config(text="Room Type: -")
-            room_number_label.config(text="Room Number: -")
+            loading_win.destroy()
+            root.destroy()
+            load_active_bookings()
+            launch_main_dashboard()
 
-    room_combo_invoice.bind("<<ComboboxSelected>>", update_room_details)
+    loading_win.after(100, advance_progress)
+    loading_win.grab_set()
 
-    # --- ITEMS ---
-    tk.Label(win, text="ITEMS", font=("Segoe UI", 12, "bold")).pack(pady=5)
-    item_vars = {
-        "Towel (RM5 each)": tk.BooleanVar(),
-        "Pillow (RM2.50 each)": tk.BooleanVar(),
-        "Blanket (RM5 each)": tk.BooleanVar()
-    }
-    for item in item_vars:
-        tk.Checkbutton(win, text=item, variable=item_vars[item]).pack(anchor="w")
+# ==================================================
+# STAGE 3: MAIN RESERVATION & INVOICE DASHBOARD
+# ==================================================
+def launch_main_dashboard():
+    global main_root, entry_name, room_var, room_type, room_combo, room_no, entry_days, date_entry, time_var, time_combo
+    global standard_tree, deluxe_tree, clock_date_lbl, clock_time_lbl
+    global lbl_stat_avail, lbl_stat_occupied, lbl_stat_res, lbl_stat_rev, map_frame
 
-    # --- FOOD & BEVERAGE ---
-    tk.Label(win, text="FOOD & BEVERAGE", font=("Segoe UI", 12, "bold")).pack(pady=5)
-    food_vars = {
-        "Snacks (RM3 each)": tk.BooleanVar(),
-        "Drinks (RM4 per can)": tk.BooleanVar(),
-        "Breakfast (RM15)": tk.BooleanVar(),
-        "Lunch (RM15)": tk.BooleanVar(),
-        "Dinner (RM15)": tk.BooleanVar()
-    }
-    for item in food_vars:
-        tk.Checkbutton(win, text=item, variable=food_vars[item]).pack(anchor="w")
+    main_root = tk.Tk()
+    main_root.title("Blue Lagoon Hotel Control Matrix")
+    main_root.geometry("1440x820")
+    main_root.state('zoomed')
+    main_root.configure(bg=BG_DARK)
 
-    # --- INCIDENTAL CHARGE ---
-    tk.Label(win, text="INCIDENTAL CHARGE", font=("Segoe UI", 12, "bold")).pack(pady=5)
-    incidental_vars = {
-        "Damage Property (RM60 penalty)": tk.BooleanVar(),
-        "Missing Item (RM100 penalty)": tk.BooleanVar()
-    }
-    for item in incidental_vars:
-        tk.Checkbutton(win, text=item, variable=incidental_vars[item]).pack(anchor="w")
+    def on_dashboard_close():
+        conn.close()
+        main_root.destroy()
+    main_root.protocol("WM_DELETE_WINDOW", on_dashboard_close)
 
-    # --- SERVICE TAX ---
-    tk.Label(win, text="SERVICE TAX", font=("Segoe UI", 12, "bold")).pack(pady=5)
-    service_vars = {
-        "Room Cleaning (8% tax)": tk.BooleanVar(),
-        "Luggage Storage (5% tax)": tk.BooleanVar(),
-        "24-hour Reception (9% tax)": tk.BooleanVar()
-    }
-    for item in service_vars:
-        tk.Checkbutton(win, text=item, variable=service_vars[item]).pack(anchor="w")
+    style = ttk.Style()
+    style.theme_use("default")
+    style.configure("Treeview", bg="#ffffff", fg="#1e293b", rowheight=28, fieldbackground="#ffffff", font=("Segoe UI", 10))
+    style.map("Treeview", background=[("selected", ACCENT_BLUE)], foreground=[("selected", "white")])
+    style.configure("Treeview.Heading", font=("Segoe UI", 10, "bold"), background="#e2e8f0", foreground="#1e293b", relief="flat")
+    style.configure("TNotebook", background=BG_DARK, borderwidth=0)
+    style.configure("TNotebook.Tab", background=BG_SIDEBAR, foreground=TEXT_MUTED, font=("Segoe UI", 10, "bold"), padding=[15, 5])
+    style.map("TNotebook.Tab", background=[("selected", ACCENT_BLUE)], foreground=[("selected", "white")])
 
-    def save_invoice():
-        room = room_var_invoice.get().strip()
-        if not room:
-            messagebox.showerror("Error", "Select a room")
+    # --- Sidebar Layout ---
+    sidebar = tk.Frame(main_root, bg=BG_SIDEBAR, width=220)
+    sidebar.pack(side="left", fill="y")
+
+    tk.Label(sidebar, text="BLUE LAGOON\nHOTEL", bg=BG_SIDEBAR, fg=ACCENT_BLUE, font=("Segoe UI", 16, "bold")).pack(pady=25)
+
+    # --- Live Digital Clock ---
+    clock_container = tk.Frame(sidebar, bg="#111827", bd=1, relief="solid")
+    clock_container.pack(pady=10, padx=15, fill="x")
+    clock_date_lbl = tk.Label(clock_container, text="", font=("Segoe UI", 10, "bold"), bg="#111827", fg=TEXT_MUTED)
+    clock_date_lbl.pack(pady=(6, 2))
+    clock_time_lbl = tk.Label(clock_container, text="", font=("Segoe UI", 13, "bold"), bg="#111827", fg=ACCENT_BLUE)
+    clock_time_lbl.pack(pady=(0, 6))
+
+    def update_clock_engine():
+        now = datetime.now()
+        clock_date_lbl.config(text=now.strftime("📅 %d %B %Y"))
+        clock_time_lbl.config(text=now.strftime("🕒 %I:%M:%S %p"))
+        main_root.after(1000, update_clock_engine)
+
+    # --- KPI Stats Panel ---
+    stats_container = tk.Frame(sidebar, bg=BG_SIDEBAR)
+    stats_container.pack(pady=10, fill="x", padx=10)
+
+    def create_kpi_card(parent, text, color):
+        f = tk.Frame(parent, bg="#0f172a", bd=1, relief="flat")
+        f.pack(fill="x", pady=4, ipady=4)
+        tk.Label(f, text=text, font=("Segoe UI", 9, "bold"), bg="#0f172a", fg=TEXT_MUTED).pack(anchor="w", padx=8)
+        val = tk.Label(f, text="0", font=("Consolas", 15, "bold"), bg="#0f172a", fg=color)
+        val.pack(anchor="w", padx=8)
+        return val
+
+    lbl_stat_avail = create_kpi_card(stats_container, "🟢 AVAILABLE ROOMS", COLOR_AVAILABLE)
+    lbl_stat_res = create_kpi_card(stats_container, "🟡 RESERVATIONS", COLOR_RESERVED)
+    lbl_stat_occupied = create_kpi_card(stats_container, "🔴 OCCUPIED ROOMS", COLOR_OCCUPIED)
+    lbl_stat_rev = create_kpi_card(stats_container, "💰 TOTAL REVENUE", ACCENT_BLUE)
+
+    # --- Control Panels ---
+    workspace = tk.Frame(main_root, bg=BG_DARK)
+    workspace.pack(side="right", fill="both", expand=True)
+
+    top_form = tk.Frame(workspace, bg=BG_DARK, padx=15, pady=10)
+    top_form.pack(fill="x")
+
+    lbl_cfg = {"bg": BG_DARK, "fg": TEXT_LIGHT, "font": ("Segoe UI", 10, "bold")}
+    ent_cfg = {"bg": "#334155", "fg": "white", "insertbackground": "white", "bd": 0, "font": ("Segoe UI", 11)}
+
+    tk.Label(top_form, text="Guest Name", **lbl_cfg).grid(row=0, column=0, padx=5, pady=10, sticky="w")
+    entry_name = tk.Entry(top_form, **ent_cfg, width=18)
+    entry_name.grid(row=0, column=1, padx=5, ipady=3)
+
+    tk.Label(top_form, text="Class", **lbl_cfg).grid(row=0, column=2, padx=5, sticky="w")
+    room_var = tk.StringVar(value="Standard")
+    room_type = ttk.Combobox(top_form, textvariable=room_var, values=["Standard", "Deluxe"], state="readonly", width=10)
+    room_type.grid(row=0, column=3, padx=5)
+
+    tk.Label(top_form, text="Room", **lbl_cfg).grid(row=0, column=4, padx=5, sticky="w")
+    room_no = tk.StringVar()
+    room_combo = ttk.Combobox(top_form, textvariable=room_no, state="readonly", width=8)
+    room_combo.grid(row=0, column=5, padx=5)
+
+    tk.Label(top_form, text="Days", **lbl_cfg).grid(row=0, column=6, padx=5, sticky="w")
+    entry_days = tk.Entry(top_form, width=5, **ent_cfg)
+    entry_days.grid(row=0, column=7, padx=5, ipady=3)
+
+    tk.Label(top_form, text="Arrive Date", **lbl_cfg).grid(row=1, column=0, padx=5, pady=10, sticky="w")
+    date_entry = DateEntry(top_form, date_pattern="yyyy-mm-dd", background=BG_SIDEBAR, foreground='white', borderwidth=0, width=15)
+    date_entry.grid(row=1, column=1, padx=5)
+
+    tk.Label(top_form, text="Time", **lbl_cfg).grid(row=1, column=2, padx=5, sticky="w")
+    time_var = tk.StringVar()
+    time_combo = ttk.Combobox(top_form, textvariable=time_var, values=[f"{h:02d}:00" for h in range(24)], state="readonly", width=8)
+    time_combo.grid(row=1, column=3, padx=5)
+    time_combo.current(14)
+
+    def update_rooms(event=None):
+        room_combo["values"] = standard_rooms if room_var.get() == "Standard" else deluxe_rooms
+        room_combo.set("")
+
+    def check_price():
+        try: d = int(entry_days.get())
+        except ValueError:
+            messagebox.showerror("Error", "Enter valid number of days")
+            return
+        price = STANDARD_PRICE if room_var.get() == "Standard" else DELUXE_PRICE
+        messagebox.showinfo("Price Engine", f"Estimated Cost Matrix: RM {price * d:.2f}")
+
+    # --- Multi-category Spinbox / Tick-Box Invoice Module ---
+    def invoice_window():
+        win = tk.Toplevel(main_root)
+        win.title("Multi-Category Billing Matrix")
+        win.geometry("550x720")
+        win.configure(bg=BG_DARK)
+
+        canvas_frame = tk.Frame(win, bg=BG_DARK)
+        canvas_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(canvas_frame, bg=BG_DARK, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
+        scroll_win = tk.Frame(canvas, bg=BG_DARK)
+
+        scroll_win.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0,0), window=scroll_win, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        tk.Label(scroll_win, text="Room Invoice Checklist", font=("Segoe UI", 14, "bold"), bg=BG_DARK, fg=ACCENT_BLUE).pack(pady=10)
+        
+        room_var_invoice = tk.StringVar()
+        room_combo_invoice = ttk.Combobox(scroll_win, textvariable=room_var_invoice, state="readonly")
+        room_combo_invoice["values"] = list(booked_rooms.keys())
+        room_combo_invoice.pack(pady=5)
+
+        room_type_label = tk.Label(scroll_win, text="Room Type: -", bg=BG_DARK, fg=TEXT_MUTED)
+        room_type_label.pack()
+
+        def update_room_details(event=None):
+            room = room_var_invoice.get()
+            if room in booked_rooms:
+                room_type_label.config(text=f"Room Type: {booked_rooms[room]['type']}")
+        room_combo_invoice.bind("<<ComboboxSelected>>", update_room_details)
+
+        # Track numerical quantities for specific items
+        qty_vars = {
+            "Towel (RM5 each)": tk.IntVar(value=0),
+            "Pillow (RM2.50 each)": tk.IntVar(value=0),
+            "Blanket (RM5 each)": tk.IntVar(value=0),
+            "Snacks (RM3 each)": tk.IntVar(value=0),
+            "Drinks (RM4 per can)": tk.IntVar(value=0)
+        }
+        
+        # Track booleans for the remaining options
+        bool_vars = {
+            "Breakfast (RM15)": tk.BooleanVar(),
+            "Lunch (RM15)": tk.BooleanVar(),
+            "Dinner (RM15)": tk.BooleanVar(),
+            "Damage Property (RM60 penalty)": tk.BooleanVar(),
+            "Missing Item (RM100 penalty)": tk.BooleanVar(),
+            "Room Cleaning (8% tax)": tk.BooleanVar(),
+            "Luggage Storage (5% tax)": tk.BooleanVar(),
+            "24-hour Reception (9% tax)": tk.BooleanVar()
+        }
+
+        # --- ITEMS SECTION (QUANTITY) ---
+        tk.Label(scroll_win, text="ITEMS", font=("Segoe UI", 11, "bold"), bg=BG_DARK, fg=ACCENT_TEAL).pack(pady=10, anchor="w", padx=40)
+        for item in ["Towel (RM5 each)", "Pillow (RM2.50 each)", "Blanket (RM5 each)"]:
+            f = tk.Frame(scroll_win, bg=BG_DARK)
+            f.pack(anchor="w", padx=60, pady=4)
+            tk.Label(f, text=f"{item:<30}", bg=BG_DARK, fg=TEXT_LIGHT, font=("Segoe UI", 10)).pack(side="left")
+            tk.Spinbox(f, from_=0, to=50, width=5, textvariable=qty_vars[item], font=("Segoe UI", 10), justify="center").pack(side="left", padx=10)
+
+        # --- FOOD & BEVERAGE SECTION (MIXED) ---
+        tk.Label(scroll_win, text="FOOD & BEVERAGE", font=("Segoe UI", 11, "bold"), bg=BG_DARK, fg=ACCENT_TEAL).pack(pady=10, anchor="w", padx=40)
+        for item in ["Snacks (RM3 each)", "Drinks (RM4 per can)"]:
+            f = tk.Frame(scroll_win, bg=BG_DARK)
+            f.pack(anchor="w", padx=60, pady=4)
+            tk.Label(f, text=f"{item:<30}", bg=BG_DARK, fg=TEXT_LIGHT, font=("Segoe UI", 10)).pack(side="left")
+            tk.Spinbox(f, from_=0, to=50, width=5, textvariable=qty_vars[item], font=("Segoe UI", 10), justify="center").pack(side="left", padx=10)
+            
+        for item in ["Breakfast (RM15)", "Lunch (RM15)", "Dinner (RM15)"]:
+            tk.Checkbutton(scroll_win, text=item, variable=bool_vars[item], bg=BG_DARK, fg=TEXT_LIGHT, selectcolor=BG_SIDEBAR, activebackground=BG_DARK).pack(anchor="w", padx=60, pady=2)
+
+        # --- INCIDENTAL CHARGES ---
+        tk.Label(scroll_win, text="INCIDENTAL CHARGES", font=("Segoe UI", 11, "bold"), bg=BG_DARK, fg=ACCENT_TEAL).pack(pady=10, anchor="w", padx=40)
+        for item in ["Damage Property (RM60 penalty)", "Missing Item (RM100 penalty)"]:
+            tk.Checkbutton(scroll_win, text=item, variable=bool_vars[item], bg=BG_DARK, fg=TEXT_LIGHT, selectcolor=BG_SIDEBAR, activebackground=BG_DARK).pack(anchor="w", padx=60, pady=2)
+
+        # --- SERVICE TAX RATINGS ---
+        tk.Label(scroll_win, text="SERVICE TAX RATINGS", font=("Segoe UI", 11, "bold"), bg=BG_DARK, fg=ACCENT_TEAL).pack(pady=10, anchor="w", padx=40)
+        for item in ["Room Cleaning (8% tax)", "Luggage Storage (5% tax)", "24-hour Reception (9% tax)"]:
+            tk.Checkbutton(scroll_win, text=item, variable=bool_vars[item], bg=BG_DARK, fg=TEXT_LIGHT, selectcolor=BG_SIDEBAR, activebackground=BG_DARK).pack(anchor="w", padx=60, pady=2)
+
+        def save_invoice():
+            room = room_var_invoice.get().strip()
+            if not room: return
+            
+            # Identify current room class type structure
+            room_type_class = booked_rooms[room]['type'] if room in booked_rooms else "Standard"
+            
+            total = 0
+            selected_items = []
+
+            # 1. Process Quantities
+            for item, var in qty_vars.items():
+                try:
+                    qty = int(var.get())
+                except ValueError:
+                    qty = 0
+                if qty > 0:
+                    if "Towel" in item or "Blanket" in item:
+                        price = 5 * qty
+                    elif "Pillow" in item:
+                        price = 2.5 * qty
+                    elif "Snacks" in item:
+                        price = 3 * qty
+                    elif "Drinks" in item:
+                        price = 4 * qty
+                    total += price
+                    clean_name = item.split(" (")[0]
+                    selected_items.append((f"{clean_name} (x{qty})", price))
+
+            # 2. Process Checkboxes
+            for item, var in bool_vars.items():
+                if var.get():
+                    # If Deluxe room class, exclude Breakfast & Room Cleaning from charges matrix
+                    if room_type_class == "Deluxe" and ("Breakfast" in item or "Room Cleaning" in item):
+                        continue
+
+                    if "Breakfast" in item or "Lunch" in item or "Dinner" in item:
+                        price = 15
+                        total += price
+                        selected_items.append((item, price))
+                    elif "Damage" in item:
+                        price = 60
+                        total += price
+                        selected_items.append((item, price))
+                    elif "Missing" in item:
+                        price = 100
+                        total += price
+                        selected_items.append((item, price))
+                    elif "Cleaning" in item:
+                        tax = total * 0.08
+                        total += tax
+                        selected_items.append((item, tax))
+                    elif "Luggage" in item:
+                        tax = total * 0.05
+                        total += tax
+                        selected_items.append((item, tax))
+                    elif "Reception" in item:
+                        tax = total * 0.09
+                        total += tax
+                        selected_items.append((item, tax))
+
+            cursor.execute("DELETE FROM invoices WHERE room = ?", (room,))
+            for itm, prc in selected_items:
+                cursor.execute("INSERT INTO invoices (room, item, price) VALUES (?, ?, ?)", (room, itm, prc))
+            conn.commit()
+            messagebox.showinfo("Saved", f"Invoice updated for room {room}. Add-ons Total: RM{total:.2f}")
+            win.destroy()
+
+        tk.Button(scroll_win, text="SAVE INVOICE CHARGES", command=save_invoice, bg=ACCENT_TEAL, fg="white", font=("Segoe UI", 10, "bold"), bd=0).pack(pady=20, ipady=4)
+
+    # --- Interactive Visual Room Map Frame ---
+    map_frame = tk.LabelFrame(workspace, text=" 🏨 INTERACTIVE HOTEL ROOM VISUAL MAP LOG MATRIX ", bg=BG_DARK, fg=ACCENT_BLUE, font=("Segoe UI", 10, "bold"), padx=10, pady=5)
+    map_frame.pack(fill="x", padx=15, pady=5)
+
+    def draw_interactive_map():
+        for widget in map_frame.winfo_children(): widget.destroy()
+        today = datetime.now().date()
+        
+        st_frame = tk.Frame(map_frame, bg=BG_DARK)
+        st_frame.pack(side="left", fill="both", expand=True, padx=5)
+        grid_st = tk.Frame(st_frame, bg=BG_DARK)
+        grid_st.pack(anchor="w")
+
+        dlx_frame = tk.Frame(map_frame, bg=BG_DARK)
+        dlx_frame.pack(side="right", fill="both", expand=True, padx=5)
+        grid_dlx = tk.Frame(dlx_frame, bg=BG_DARK)
+        grid_dlx.pack(anchor="w")
+
+        def construct_nodes(room_list, parent_grid):
+            for idx, r in enumerate(room_list):
+                if r in booked_rooms:
+                    b = booked_rooms[r]
+                    cin = datetime.strptime(b["checkin"], "%Y-%m-%d %H:%M")
+                    bg_node = COLOR_OCCUPIED if cin.date() <= today else COLOR_RESERVED
+                    status_txt = "OCCUPIED" if cin.date() <= today else "RESERVED"
+                else:
+                    bg_node = COLOR_AVAILABLE; status_txt = "AVAILABLE"
+
+                btn = tk.Button(parent_grid, text=f"{r}\n●", font=("Consolas", 9, "bold"), bg=bg_node, fg="white", width=7, height=2, bd=0, cursor="hand2")
+                btn.grid(row=idx // 6, column=idx % 6, padx=3, pady=3)
+                
+                def make_cb(room_id, st_lbl):
+                    return lambda e: messagebox.showinfo(f"Room {room_id}", f"Status: {st_lbl}\n" + (f"Guest: {booked_rooms[room_id]['name']}\nCheckout: {booked_rooms[room_id]['checkout']}" if room_id in booked_rooms else "Guest: None"))
+                btn.bind("<Button-1>", make_cb(r, status_txt))
+
+        construct_nodes(standard_rooms, grid_st)
+        construct_nodes(deluxe_rooms, grid_dlx)
+
+    # --- Interactive Visual Room Map Frame ---
+    def refresh():
+        for t in (standard_tree, deluxe_tree):
+            for i in t.get_children(): t.delete(i)
+
+        today = datetime.now().date()
+        cnt_avail, cnt_res, cnt_occ, total_rev = 0, 0, 0, 0
+
+        for room in standard_rooms:
+            if room in booked_rooms:
+                b = booked_rooms[room]
+                cin = datetime.strptime(b["checkin"], "%Y-%m-%d %H:%M")
+                status = "Active" if cin.date() <= today else "Reservation"
+                if status == "Active": cnt_occ += 1
+                else: cnt_res += 1
+                vals = (room, b["name"], b["type"], b["days"], b["checkin"], b["checkout"], f'RM{b["total"]}', status)
+                tag = 'active' if status == "Active" else 'reservation'
+            else:
+                cnt_avail += 1; vals = (room, "-", "-", "-", "-", "-", "-", "Available"); tag = 'available'
+            standard_tree.insert("", "end", values=vals, tags=(tag,))
+
+        for room in deluxe_rooms:
+            if room in booked_rooms:
+                b = booked_rooms[room]
+                cin = datetime.strptime(b["checkin"], "%Y-%m-%d %H:%M")
+                status = "Active" if cin.date() <= today else "Reservation"
+                if status == "Active": cnt_occ += 1
+                else: cnt_res += 1
+                vals = (room, b["name"], b["type"], b["days"], b["checkin"], b["checkout"], f'RM{b["total"]}', status)
+                tag = 'active' if status == "Active" else 'reservation'
+            else:
+                cnt_avail += 1; vals = (room, "-", "-", "-", "-", "-", "-", "Available"); tag = 'available'
+            deluxe_tree.insert("", "end", values=vals, tags=(tag,))
+
+        cursor.execute("SELECT total, penalty FROM bookings")
+        for row in cursor.fetchall(): total_rev += row[0] + row[1]
+
+        lbl_stat_avail.config(text=str(cnt_avail))
+        lbl_stat_res.config(text=str(cnt_res))
+        lbl_stat_occupied.config(text=str(cnt_occ))
+        lbl_stat_rev.config(text=f"RM {total_rev:,}")
+
+        for t in (standard_tree, deluxe_tree):
+            t.tag_configure('available', background="#e2f0d9", foreground="#1e4620")
+            t.tag_configure('reservation', background="#fff2cc", foreground="#7f6000")
+            t.tag_configure('active', background="#fce4d6", foreground="#c65911")
+
+        draw_interactive_map()
+
+    def book_room():
+        name = entry_name.get().strip()
+        room = room_no.get().strip()
+        if not name or not room or not entry_days.get():
+            messagebox.showerror("Error", "Complete all requested fields")
+            return
+        try: days = int(entry_days.get())
+        except ValueError: return
+        
+        if room in booked_rooms:
+            messagebox.showerror("Error", "Room already booked")
             return
 
-        total = 0
-        selected_items = []
-
-        # Items
-        for item, var in item_vars.items():
-            if var.get():
-                price = 5 if "Towel" in item or "Blanket" in item else 2.5
-                total += price
-                selected_items.append((item, price))
-
-        # Food & Beverage
-        for item, var in food_vars.items():
-            if var.get():
-                if "Snacks" in item:
-                    price = 3
-                elif "Drinks" in item:
-                    price = 4
-                elif "Breakfast" in item or "Lunch" in item or "Dinner" in item:
-                    price = 15
-                total += price
-                selected_items.append((item, price))
-
-        # Incidental charges
-        for item, var in incidental_vars.items():
-            if var.get():
-                if "Damage Property" in item:
-                    price = 60
-                elif "Missing Item" in item:
-                    price = 100
-                total += price
-                selected_items.append((item, price))
-
-        # Service tax
-        for item, var in service_vars.items():
-            if var.get():
-                if "Room Cleaning" in item:
-                    tax = total * 0.08
-                elif "Luggage Storage" in item:
-                    tax = total * 0.05
-                elif "Reception" in item:
-                    tax = total * 0.09
-                else:
-                    tax = 0
-                total += tax
-                selected_items.append((item, tax))
-
-        # Save to database
-        cursor.execute("DELETE FROM invoices WHERE room = ?", (room,))
-        for item, price in selected_items:
-            cursor.execute("INSERT INTO invoices (room, item, price) VALUES (?, ?, ?)", (room, item, price))
-        conn.commit()
-
-        messagebox.showinfo("Invoice Saved", f"Invoice for Room {room} saved.\nTotal: RM{total:.2f}")
-
-    ttk.Button(win, text="Save Invoice", command=save_invoice).pack(pady=10)
-
-# --- Refresh room lists ---
-def refresh():
-    for t in (standard_tree, deluxe_tree):
-        for i in t.get_children():
-            t.delete(i)
-
-    today = datetime.now().date()
-    for room in standard_rooms:
-        if room in booked_rooms:
-            b = booked_rooms[room]
-            checkin_dt = datetime.strptime(b["checkin"], "%Y-%m-%d %H:%M")
-            status = "Reservation" if checkin_dt.date() != today else "Active"
-            vals = (room, b["name"], b["type"], b["days"], b["checkin"], b["checkout"], f'RM{b["total"]}', status)
-        else:
-            vals = (room, "-", "-", "-", "-", "-", "-", "Available")
-        standard_tree.insert("", "end", values=vals)
-
-    for room in deluxe_rooms:
-        if room in booked_rooms:
-            b = booked_rooms[room]
-            checkin_dt = datetime.strptime(b["checkin"], "%Y-%m-%d %H:%M")
-            status = "Reservation" if checkin_dt.date() != today else "Active"
-            vals = (room, b["name"], b["type"], b["days"], b["checkin"], b["checkout"], f'RM{b["total"]}', status)
-        else:
-            vals = (room, "-", "-", "-", "-", "-", "-", "Available")
-        deluxe_tree.insert("", "end", values=vals)
-
-# --- Book room ---
-def book_room():
-    name = entry_name.get().strip()
-    room = room_no.get().strip()
-    if not name or not room:
-        messagebox.showerror("Error", "Complete all fields")
-        return
-    try:
-        days = int(entry_days.get())
-    except:
-        messagebox.showerror("Error", "Days must be numeric")
-        return
-    if room in booked_rooms:
-        messagebox.showerror("Error", "Room already booked")
-        return
-
-    checkin = datetime.strptime(date_entry.get() + " " + time_var.get(), "%Y-%m-%d %H:%M")
-
-    # Prevent booking in the past
-    if checkin <= datetime.now():
-        messagebox.showerror(
-            "Booking Error",
-            "Cannot put date or time in the past."
-        )
-        return
-
-    checkout = checkin + timedelta(days=days)
-    price = STANDARD_PRICE if room_var.get() == "Standard" else DELUXE_PRICE
-
-    booked_rooms[room] = {
-        "name": name,
-        "type": room_var.get(),
-        "days": days,
-        "checkin": checkin.strftime("%Y-%m-%d %H:%M"),
-        "checkout": checkout.strftime("%Y-%m-%d %H:%M"),
-        "total": price * days,
-        "checkout_dt": checkout
-    }
-
-    cursor.execute("""INSERT INTO bookings (room, name, type, days, checkin, checkout, total, penalty, status)
-                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                   (room, name, room_var.get(), days,
-                    checkin.strftime("%Y-%m-%d %H:%M"),
-                    checkout.strftime("%Y-%m-%d %H:%M"),
-                    price * days, 0, "Booked"))
-    conn.commit()
-    refresh()
-    messagebox.showinfo("Success", "Room booked successfully")
-
-# --- Checkout room ---
-def checkout_room():
-    win = tk.Toplevel(root)
-    win.title("Room Checkout")
-    win.geometry("350x220")
-    win.resizable(False, False)
-
-    tk.Label(win, text="Checkout Room", font=("Segoe UI", 12, "bold")).pack(pady=10)
-    tk.Label(win, text="Room Type").pack()
-    checkout_type = tk.StringVar(value="Standard")
-    type_combo = ttk.Combobox(win, textvariable=checkout_type,
-                              values=["Standard", "Deluxe"], state="readonly")
-    type_combo.pack(pady=5)
-
-    tk.Label(win, text="Room Number").pack()
-    checkout_room_no = tk.StringVar()
-    room_combo_checkout = ttk.Combobox(win, textvariable=checkout_room_no, state="readonly")
-    room_combo_checkout.pack(pady=5)
-
-    def update_checkout_rooms(event=None):
-        rooms = [r for r in (standard_rooms if checkout_type.get()=="Standard" else deluxe_rooms) if r in booked_rooms]
-        room_combo_checkout["values"] = rooms
-        if rooms: room_combo_checkout.current(0)
-        else: room_combo_checkout.set("")
-    type_combo.bind("<<ComboboxSelected>>", update_checkout_rooms)
-    update_checkout_rooms()
-
-    def confirm_checkout():
-        room = checkout_room_no.get().strip()
-        if not room or room not in booked_rooms:
-            messagebox.showerror("Error", "Select a valid booked room")
+        checkin = datetime.strptime(date_entry.get() + " " + time_var.get(), "%Y-%m-%d %H:%M")
+        if checkin <= datetime.now():
+            messagebox.showerror("Booking Error", "Cannot book date/time in the past.")
             return
-        data = booked_rooms[room]
-        penalty = 0
-        if datetime.now() > data["checkout_dt"]:
-            penalty = STANDARD_PENALTY if data["type"]=="Standard" else DELUXE_PENALTY
 
-        cursor.execute("SELECT item, price FROM invoices WHERE room=?", (room,))
-        invoice_items = cursor.fetchall()
-        invoice_total = sum(p for _, p in invoice_items) if invoice_items else 0
-        final_total = data["total"] + penalty + invoice_total
+        checkout = checkin + timedelta(days=days)
+        price = STANDARD_PRICE if room_var.get() == "Standard" else DELUXE_PRICE
 
-        cursor.execute("UPDATE bookings SET penalty=?, status=? WHERE room=? AND name=?",
-                       (penalty, "Checked Out", room, data["name"]))
+        cursor.execute("INSERT INTO bookings (room, name, type, days, checkin, checkout, total, penalty, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (room, name, room_var.get(), days, checkin.strftime("%Y-%m-%d %H:%M"), checkout.strftime("%Y-%m-%d %H:%M"), price * days, 0, "Booked"))
         conn.commit()
-
-        file_path = filedialog.asksaveasfilename(defaultextension=".txt",
-                                                 filetypes=[("Text files","*.txt")],
-                                                 title="Save Invoice As")
-        if file_path:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write("BLUE LAGOON HOTEL INVOICE\n")
-                f.write("="*40+"\n")
-                f.write(f"Customer: {data['name']}\n")
-                f.write(f"Room: {room} ({data['type']})\n")
-                f.write(f"Check-In: {data['checkin']}\n")
-                f.write(f"Check-Out: {data['checkout']}\n")
-                f.write("-"*40+"\n")
-                f.write("Itemized Charges:\n")
-                if data["type"]=="Deluxe":
-                    f.write("  Breakfast (Included)\n")
-                    f.write("  Room Cleaning (Included)\n")
-                if invoice_items:
-                    for item, price in invoice_items:
-                        if data["type"]=="Deluxe" and item.lower() in ["breakfast","room cleaning"]:
-                            continue
-                        f.write(f"  {item:<25} RM{price:.2f}\n")
-                else:
-                    f.write("  (No additional items)\n")
-                f.write("-"*40+"\n")
-                f.write(f"Room Total: RM{data['total']:.2f}\n")
-                f.write(f"Services Total: RM{invoice_total:.2f}\n")
-                f.write(f"Penalty: RM{penalty:.2f}\n")
-                f.write("="*40+"\n")
-                f.write(f"Final Total: RM{final_total:.2f}\n")
-                f.write("="*40+"\n")
-                f.write("Thank you for staying with us!\n")
-            os.system(f'notepad "{file_path}"')
-
-        messagebox.showinfo("Checkout Summary", f"Invoice generated for Room {room}.\nFinal Total: RM{final_total:.2f}")
-        del booked_rooms[room]
+        load_active_bookings()
         refresh()
-        win.destroy()
+        messagebox.showinfo("Success", "Room Booked Successfully!")
 
-    ttk.Button(win, text="Check Out", command=confirm_checkout).pack(pady=15)
+    def checkout_room():
+        win = tk.Toplevel(main_root)
+        win.title("Room Checkout")
+        win.geometry("350x220")
+        win.configure(bg=BG_DARK)
 
-def export_booking_history():
-    file_path = filedialog.asksaveasfilename(
-        defaultextension=".csv",
-        filetypes=[("CSV Files", "*.csv")],
-        title="Save Booking History"
-    )
+        tk.Label(win, text="Checkout Room Unit:", bg=BG_DARK, fg=TEXT_LIGHT).pack(pady=10)
+        checkout_room_no = tk.StringVar()
+        combo = ttk.Combobox(win, textvariable=checkout_room_no, values=list(booked_rooms.keys()), state="readonly")
+        combo.pack(pady=5)
 
-    if not file_path:
-        return
+        def confirm_checkout():
+            room = checkout_room_no.get()
+            if not room: return
+            data = booked_rooms[room]
+            
+            penalty = 0
+            if datetime.now() > data["checkout_dt"]:
+                penalty = STANDARD_PENALTY if data["type"] == "Standard" else DELUXE_PENALTY
 
-    cursor.execute("""
-        SELECT room, name, type, days,
-               checkin, checkout,
-               total, penalty, status
-        FROM bookings
-    """)
+            cursor.execute("SELECT item, price FROM invoices WHERE room=?", (room,))
+            invoice_items = cursor.fetchall()
+            invoice_total = sum(p for _, p in invoice_items)
+            final_total = data["total"] + penalty + invoice_total
 
-    rows = cursor.fetchall()
+            cursor.execute("UPDATE bookings SET penalty=?, status=? WHERE id=?", (penalty, "Checked Out", data["booking_id"]))
+            cursor.execute("DELETE FROM invoices WHERE room=?", (room,))
+            conn.commit()
 
-    with open(file_path, "w", newline="", encoding="utf-8") as file:
-        writer = csv.writer(file)
+            # --- DYNAMIC FILENAME GENERATION FOR TODAY'S DATE ---
+            # Format today's live system date to MM-DD-YYYY (e.g. 6-23-2026)
+            current_date_str = datetime.now().strftime("%m-%d-%Y")
+            
+            # Clean spaces from customer names to safely construct filenames
+            clean_customer_name = data['name'].replace(" ", "_")
+            default_invoice_filename = f"Invoice_Receipt_{clean_customer_name}_{current_date_str}.txt"
 
-        writer.writerow([
-            "Room No", "Customer", "Type", "Days",
-            "Check-In", "Check-Out",
-            "Total", "Penalty", "Status"
-        ])
+            file_path = filedialog.asksaveasfilename(
+                initialfile=default_invoice_filename,
+                defaultextension=".txt", 
+                filetypes=[("Text files", "*.txt")], 
+                title="Save Invoice As"
+            )
+            if file_path:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    f.write("BLUE LAGOON HOTEL RECEIPT\n" + "="*40 + "\n")
+                    f.write(f"Customer: {data['name']}\nRoom Unit: {room} [{data['type']}]\n")
+                    f.write(f"Check-In: {data['checkin']}\nCheck-Out: {data['checkout']}\n" + "-"*40 + "\n")
+                    if data["type"] == "Deluxe":
+                        f.write("  Breakfast (Included)\n  Room Cleaning (Included)\n")
+                    for item, price in invoice_items:
+                        f.write(f"  {item:<25} RM{price:.2f}\n")
+                    f.write("-"*40 + f"\nBase Total: RM{data['total']:.2f}\nServices: RM{invoice_total:.2f}\nPenalty: RM{penalty:.2f}\nGrand Total: RM{final_total:.2f}\n" + "="*40)
+                os.system(f'notepad "{file_path}"')
 
-        writer.writerows(rows)
+            load_active_bookings()
+            refresh()
+            win.destroy()
 
-    messagebox.showinfo(
-        "Success",
-        "Booking history exported successfully."
-    )
+        tk.Button(win, text="CONFIRM DISCHARGE", command=confirm_checkout, bg=COLOR_OCCUPIED, fg="white", font=("Segoe UI", 10, "bold"), bd=0).pack(pady=15, ipady=4)
 
+    def export_booking_history():
+        # --- DYNAMIC FILENAME GENERATION FOR TODAY'S DATE ---
+        # Format today's live system date to MM-DD-YYYY (e.g. 6-23-2026)
+        current_date_str = datetime.now().strftime("%m-%d-%Y")
+        default_history_filename = f"Booking_History_{current_date_str}.csv"
 
-def booking_history():
-    win = tk.Toplevel(root)
-    win.title("Booking History")
-    win.geometry("1000x500")
+        file_path = filedialog.asksaveasfilename(
+            initialfile=default_history_filename,
+            defaultextension=".csv", 
+            filetypes=[("CSV Files", "*.csv")], 
+            title="Save Booking History"
+        )
+        if not file_path: return
+        cursor.execute("SELECT room, name, type, days, checkin, checkout, total, penalty, status FROM bookings")
+        with open(file_path, "w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
+            writer.writerow(["Room No", "Customer", "Type", "Days", "Check-In", "Check-Out", "Total", "Penalty", "Status"])
+            writer.writerows(cursor.fetchall())
+        messagebox.showinfo("Success", "Booking history exported successfully.")
 
-    cols = (
-        "Room No", "Customer", "Type", "Days",
-        "Check-In", "Check-Out",
-        "Total", "Penalty", "Status"
-    )
+    def booking_history():
+        win = tk.Toplevel(main_root)
+        win.title("Booking History Record Sheet")
+        win.geometry("1000x500")
+        cols = ("Room No", "Customer", "Type", "Days", "Check-In", "Check-Out", "Total", "Penalty", "Status")
+        t = ttk.Treeview(win, columns=cols, show="headings")
+        for c in cols:
+            t.heading(c, text=c); t.column(c, width=110, anchor="center")
+        t.pack(fill="both", expand=True)
+        cursor.execute("SELECT room, name, type, days, checkin, checkout, total, penalty, status FROM bookings")
+        for r in cursor.fetchall(): t.insert("", "end", values=r)
+        ttk.Button(win, text="Export Booking Log (CSV)", command=export_booking_history).pack(pady=10)
 
-    history_tree = ttk.Treeview(
-        win,
-        columns=cols,
-        show="headings"
-    )
+    # --- Top Control Hooks Grid ---
+    btn_box = tk.Frame(top_form, bg=BG_DARK)
+    btn_box.grid(row=0, column=8, rowspan=2, padx=15, sticky="ns")
+    tk.Button(btn_box, text="📋 Price Matrix", bg=BG_SIDEBAR, fg=TEXT_LIGHT, font=("Segoe UI", 10, "bold"), bd=0, command=check_price).pack(side="left", padx=4, ipady=6, ipadx=4)
+    tk.Button(btn_box, text="🏨 Book Room", bg=ACCENT_TEAL, fg="white", font=("Segoe UI", 10, "bold"), bd=0, command=book_room).pack(side="left", padx=4, ipady=6, ipadx=4)
+    tk.Button(btn_box, text="🚪 Check Out", bg=COLOR_OCCUPIED, fg="white", font=("Segoe UI", 10, "bold"), bd=0, command=checkout_room).pack(side="left", padx=4, ipady=6, ipadx=4)
 
-    for c in cols:
-        history_tree.heading(c, text=c)
-        history_tree.column(c, width=120, anchor="center")
+    # --- Sidebar Global Hooks Navigation ---
+    tk.Button(sidebar, text="Booking History Sheet", bg="#334155", fg="white", font=("Segoe UI", 10, "bold"), bd=0, command=booking_history).pack(pady=8, ipady=5, fill="x", padx=15)
+    tk.Button(sidebar, text="Room Service Invoice", bg="#334155", fg="white", font=("Segoe UI", 10, "bold"), bd=0, command=invoice_window).pack(pady=8, ipady=5, fill="x", padx=15)
+    tk.Button(sidebar, text="Force Grid Refresh", bg="#334155", fg="white", font=("Segoe UI", 10, "bold"), bd=0, command=refresh).pack(pady=8, ipady=5, fill="x", padx=15)
 
-    history_tree.pack(fill="both", expand=True)
+    room_type.bind("<<ComboboxSelected>>", update_rooms)
+    update_rooms()
 
-    cursor.execute("""
-        SELECT room, name, type, days,
-               checkin, checkout,
-               total, penalty, status
-        FROM bookings
-    """)
+    # --- Notebook Display Tabs ---
+    tabs = ttk.Notebook(workspace)
+    tabs.pack(fill="both", expand=True, padx=15, pady=5)
+    std_tab = tk.Frame(tabs, bg=BG_DARK)
+    dlx_tab = tk.Frame(tabs, bg=BG_DARK)
+    tabs.add(std_tab, text=" STANDARD ROOM MATRIX ")
+    tabs.add(dlx_tab, text=" DELUXE ROOM MATRIX ")
 
-    for row in cursor.fetchall():
-        history_tree.insert("", "end", values=row)
+    cols = ("Room No", "Customer", "Type", "Days", "Check-In", "Check-Out", "Total", "Status")
+    standard_tree = ttk.Treeview(std_tab, columns=cols, show="headings")
+    deluxe_tree = ttk.Treeview(dlx_tab, columns=cols, show="headings")
 
-    ttk.Button(
-        win,
-        text="Export to Excel (CSV)",
-        command=export_booking_history
-    ).pack(pady=10)
+    for t in (standard_tree, deluxe_tree):
+        for c in cols:
+            t.heading(c, text=c); t.column(c, width=120, anchor="center")
+        t.pack(fill="both", expand=True, padx=5, pady=5)
 
-# --- Sidebar buttons ---
-tk.Button(sidebar, text="Booking History", width=18, command=lambda: booking_history()).pack(pady=10)
-tk.Button(sidebar, text="Invoice", width=18, command=invoice_window).pack(pady=10)
-tk.Button(sidebar, text="Rooms", width=18).pack(pady=10)
+    update_clock_engine()
+    refresh()
+    main_root.mainloop()
 
-# --- Top action buttons ---
-ttk.Button(top, text="Check Price", command=check_price).grid(row=0, column=8, padx=5)
-ttk.Button(top, text="Book Room", command=book_room).grid(row=0, column=9, padx=5)
-ttk.Button(top, text="Check Out", command=checkout_room).grid(row=0, column=10, padx=5)
-
-room_type.bind("<<ComboboxSelected>>", update_rooms)
-update_rooms()
-
-# --- Tabs for room lists ---
-tabs = ttk.Notebook(main)
-tabs.pack(fill="both", expand=True, padx=10, pady=10)
-
-std_tab = tk.Frame(tabs)
-dlx_tab = tk.Frame(tabs)
-
-tabs.add(std_tab, text="Standard Rooms")
-tabs.add(dlx_tab, text="Deluxe Rooms")
-
-cols = ("Room No", "Customer", "Type", "Days", "Check-In", "Check-Out", "Total", "Status")
-
-standard_tree = ttk.Treeview(std_tab, columns=cols, show="headings")
-for c in cols:
-    standard_tree.heading(c, text=c)
-    standard_tree.column(c, width=140, anchor="center")
-standard_tree.pack(fill="both", expand=True)
-
-deluxe_tree = ttk.Treeview(dlx_tab, columns=cols, show="headings")
-for c in cols:
-    deluxe_tree.heading(c, text=c)
-    deluxe_tree.column(c, width=140, anchor="center")
-deluxe_tree.pack(fill="both", expand=True)
-
-# --- Initialize display ---
-refresh()
-root.mainloop()
-
-# --- Close DB connection when program ends ---
-conn.close()
+# ==================================================
+# RUN EXECUTOR ENTRY TRIGGER
+# ==================================================
+if __name__ == "__main__":
+    show_login_window()
